@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>LOCKED IN</title>
+<style>
+body { margin:0; overflow:hidden; background:black; }
+#ui {
+    position:fixed;
+    top:10px;
+    left:10px;
+    color:white;
+    font-family:Arial;
+}
+#stamina {
+    width:200px;
+    height:10px;
+    background:#333;
+    margin-top:5px;
+}
+#bar {
+    height:100%;
+    width:100%;
+    background:lime;
+}
+#overlay {
+    position:fixed;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    pointer-events:none;
+}
+</style>
+</head>
+<body>
+
+<div id="ui">
+Day <span id="dayNum">1</span><br>
+Find the key. Press E to unlock door.
+<div id="stamina"><div id="bar"></div></div>
+</div>
+
+<div id="overlay"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160/examples/js/controls/PointerLockControls.js"></script>
+
+<script>
+let day = 1;
+let tries = 3;
+
+let gameState = "playing"; // playing, escaping, dead
+let interactCooldown = false;
+let doorLocked = true;
+let hasKey = false;
+
+let stamina = 100;
+let keys = {};
+let chasing = false;
+let monsterSpeed = 0.04;
+
+let scene = new THREE.Scene();
+let camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+let renderer = new THREE.WebGLRenderer();
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+scene.fog = new THREE.Fog(0x000000, 10, 80);
+
+window.addEventListener("resize", ()=>{
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+let controls = new THREE.PointerLockControls(camera, document.body);
+document.body.addEventListener("click", () => controls.lock());
+scene.add(controls.getObject());
+
+/* LIGHT */
+let flashlight = new THREE.SpotLight(0xffffff, 3, 30, Math.PI/8, 0.5);
+camera.add(flashlight);
+camera.add(flashlight.target);
+scene.add(camera);
+
+/* FLOOR */
+let floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(50,50),
+    new THREE.MeshPhongMaterial({color:0x222222})
+);
+floor.rotation.x = -Math.PI/2;
+scene.add(floor);
+
+/* WALLS */
+function wall(x,z,w,h,d,color=0x333333){
+    let m = new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshPhongMaterial({color})
+    );
+    m.position.set(x,h/2,z);
+    scene.add(m);
+}
+wall(0,-25,50,5,1);
+wall(0,25,50,5,1);
+wall(-25,0,1,5,50);
+wall(25,0,1,5,50);
+
+/* DOOR */
+let door = new THREE.Mesh(
+    new THREE.BoxGeometry(4,5,1),
+    new THREE.MeshPhongMaterial({color:0x2244ff})
+);
+door.position.set(0,2.5,-24);
+scene.add(door);
+
+/* KEY */
+let key = new THREE.Mesh(
+    new THREE.BoxGeometry(1,1,1),
+    new THREE.MeshBasicMaterial({color:0xffff00})
+);
+function respawnKey(){
+    hasKey = false;
+    scene.add(key);
+    key.position.set(
+        (Math.random()*20)-10,
+        1,
+        (Math.random()*20)-10
+    );
+}
+respawnKey();
+
+/* MONSTER */
+let monster = new THREE.Mesh(
+    new THREE.BoxGeometry(2,4,2),
+    new THREE.MeshPhongMaterial({color:0xff0000})
+);
+monster.position.set(0,2,-10);
+scene.add(monster);
+
+/* MESSAGE */
+function showMessage(text){
+    let msg = document.createElement("div");
+    msg.style.position = "fixed";
+    msg.style.bottom = "20px";
+    msg.style.left = "50%";
+    msg.style.transform = "translateX(-50%)";
+    msg.style.color = "white";
+    msg.style.fontFamily = "Arial";
+    msg.innerText = text;
+    document.body.appendChild(msg);
+    setTimeout(()=>document.body.removeChild(msg),2000);
+}
+
+/* INPUT */
+document.addEventListener("keydown", e=>{
+    keys[e.code]=true;
+
+    if(e.code==="KeyE" && !interactCooldown && gameState==="playing"){
+        let doorDist = camera.position.distanceTo(door.position);
+
+        if(doorDist < 3){
+            interactCooldown = true;
+
+            if(hasKey){
+                unlockDoor();
+            } else {
+                showMessage("The door is locked. I need the key.");
+            }
+
+            setTimeout(()=>interactCooldown=false,1000);
+        }
+    }
+});
+
+document.addEventListener("keyup", e=>keys[e.code]=false);
+
+/* UNLOCK DOOR */
+function unlockDoor(){
+    if(gameState!=="playing") return;
+
+    gameState="escaping";
+    chasing=false;
+    doorLocked=false;
+
+    showMessage("Unlocked...");
+
+    let startX=door.position.x;
+    let targetX=startX+5;
+    let startTime=Date.now();
+
+    function animateDoor(){
+        let elapsed=Date.now()-startTime;
+        let progress=Math.min(elapsed/1500,1);
+        door.position.x=startX+(targetX-startX)*progress;
+
+        if(progress<1){
+            requestAnimationFrame(animateDoor);
+        } else {
+            escapeGame();
+        }
+    }
+    animateDoor();
+}
+
+/* ESCAPE */
+function escapeGame(){
+    controls.unlock();
+    let overlay=document.getElementById("overlay");
+    let start=Date.now();
+
+    function anim(){
+        let elapsed=Date.now()-start;
+        controls.moveForward(0.05);
+        let fade=Math.min(elapsed/2000,1);
+        overlay.style.background="rgba(255,255,255,"+fade+")";
+
+        if(fade<1){
+            requestAnimationFrame(anim);
+        } else {
+            document.body.innerHTML=
+            "<h1 style='color:black;background:white;text-align:center;margin-top:20%;font-size:80px'>YOU ESCAPED</h1>";
+        }
+    }
+    anim();
+}
+
+/* GAME LOOP */
+function animate(){
+requestAnimationFrame(animate);
+
+if(gameState==="escaping"){
+    renderer.render(scene,camera);
+    return;
+}
+
+let speed=0.1;
+if(keys["ShiftLeft"] && stamina>0){
+    speed=0.2;
+    stamina-=0.5;
+}else stamina+=0.2;
+
+stamina=Math.max(0,Math.min(100,stamina));
+document.getElementById("bar").style.width=stamina+"%";
+
+if(keys["KeyW"]) controls.moveForward(speed);
+if(keys["KeyS"]) controls.moveForward(-speed);
+if(keys["KeyA"]) controls.moveRight(-speed);
+if(keys["KeyD"]) controls.moveRight(speed);
+
+/* DOOR COLLISION */
+if(doorLocked){
+    let dx=Math.abs(camera.position.x-door.position.x);
+    let dz=Math.abs(camera.position.z-door.position.z);
+    if(dx<2 && dz<1.5){
+        controls.moveForward(-0.2);
+    }
+}
+
+let dist=monster.position.distanceTo(camera.position);
+
+if(dist<15) chasing=true;
+else if(dist>25) chasing=false;
+
+if(chasing){
+    let dir=new THREE.Vector3()
+        .subVectors(camera.position,monster.position)
+        .normalize();
+    monster.lookAt(camera.position);
+    monster.position.add(dir.multiplyScalar(monsterSpeed));
+}
+
+if(dist<2 && gameState==="playing"){
+    die();
+}
+
+if(!hasKey && camera.position.distanceTo(key.position)<2){
+    hasKey=true;
+    scene.remove(key);
+    showMessage("You found the key.");
+}
+
+renderer.render(scene,camera);
+}
+animate();
+
+/* DEATH */
+function die(){
+    tries--;
+    if(tries<=0){
+        gameState="dead";
+        document.body.innerHTML=
+        "<h1 style='color:red;text-align:center;margin-top:20%;font-size:80px'>YOU ARE LOCKED IN.</h1>";
+        return;
+    }
+    day++;
+    document.getElementById("dayNum").innerText=day;
+    monster.position.set(0,2,-10);
+    chasing=false;
+    respawnKey();
+}
+</script>
+</body>
+</html>
