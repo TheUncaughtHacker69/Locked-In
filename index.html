@@ -1,49 +1,348 @@
-<!-- Use stable scripts for the core and controls -->
-<script src="https://cdnjs.cloudflare.com"></script>
-<script src="https://cdn.jsdelivr.net"></script>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>LOCKED IN</title>
+<style>
+body { margin:0; overflow:hidden; background:black; font-family:Arial; }
+#menu,#winScreen,#deathScreen{
+    position:fixed;width:100%;height:100%;
+    background:black;color:white;
+    display:flex;flex-direction:column;
+    justify-content:center;align-items:center;
+    z-index:10;
+}
+#flash{
+    position:fixed;width:100%;height:100%;
+    background:red;opacity:0;
+    pointer-events:none;z-index:9;
+    transition:opacity .2s;
+}
+button{
+    padding:15px 30px;font-size:18px;
+    margin-top:20px;cursor:pointer;
+    background:#111;color:white;
+    border:2px solid white;
+}
+</style>
+</head>
+<body>
 
-<script>
-// ... [Keep your variables: day, tries, gameState, etc.] ...
+<div id="flash"></div>
 
-/* SCENE SETUP */
-let scene = new THREE.Scene();
-scene.background = new THREE.Color(0x050505); // Dark grey instead of pure black
-scene.fog = new THREE.Fog(0x000000, 5, 30);
+<div id="menu">
+    <h1 style="font-size:60px;">LOCKED IN</h1>
+    <p>Find 3 keys. Escape.</p>
+    <button onclick="startGame()">START</button>
+</div>
 
-let camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-// START POSITION: Ensure camera is above the floor (y=2) and inside the room
-camera.position.set(0, 2, 10); 
+<div id="winScreen" style="display:none;">
+    <h1 style="color:lime;font-size:60px;">YOU ESCAPED</h1>
+    <button onclick="restartGame()">PLAY AGAIN</button>
+</div>
 
-let renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
+<div id="deathScreen" style="display:none;">
+    <h1 style="color:red;font-size:60px;">YOU WERE CAUGHT</h1>
+    <button onclick="restartGame()">TRY AGAIN</button>
+</div>
+
+<!-- AUDIO -->
+<audio id="bgMusic" loop src="creepy.mp3"></audio>
+<audio id="heartbeat" loop src="heartbeat.mp3"></audio>
+<audio id="monsterBreath" loop src="breathing.mp3"></audio>
+<audio id="monsterSteps" loop src="steps.mp3"></audio>
+<audio id="keySound" src="key.mp3"></audio>
+<audio id="doorSound" src="unlock.mp3"></audio>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
+import { PointerLockControls } from "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/controls/PointerLockControls.js";
+
+/* ================= AUDIO ================= */
+const bgMusic=document.getElementById("bgMusic");
+const heartbeat=document.getElementById("heartbeat");
+const monsterBreath=document.getElementById("monsterBreath");
+const monsterSteps=document.getElementById("monsterSteps");
+const keySound=document.getElementById("keySound");
+const doorSound=document.getElementById("doorSound");
+
+bgMusic.volume=0.25;
+heartbeat.volume=0;
+monsterBreath.volume=0;
+monsterSteps.volume=0.3;
+
+/* ================= GAME STATE ================= */
+let gameState="menu";
+let totalKeys=3, keysCollected=0;
+let keyObjects=[], colliders=[];
+let chasing=false;
+let monsterSpeed=0.05, maxMonsterSpeed=0.12;
+let playerRadius=0.8, monsterRadius=1;
+let wanderDir=new THREE.Vector3(1,0,0), wanderTimer=0;
+let flash=document.getElementById("flash");
+
+/* ================= SCENE ================= */
+const scene=new THREE.Scene();
+scene.fog=new THREE.Fog(0x000000,10,60);
+
+const camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,1000);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
 document.body.appendChild(renderer.domElement);
 
-/* LIGHTS - Added Ambient Light so you can see without the flashlight */
-let ambient = new THREE.AmbientLight(0x404040, 0.5); 
-scene.add(ambient);
+const controls=new PointerLockControls(camera,document.body);
+scene.add(controls.getObject());
 
-let flashlight = new THREE.PointLight(0xffffff, 1.5, 15);
+scene.add(new THREE.AmbientLight(0x222222,0.3));
+
+/* FLASHLIGHT */
+const flashlight=new THREE.SpotLight(0xffffff,3,40,Math.PI/8,0.5);
+flashlight.castShadow=true;
 camera.add(flashlight);
-scene.add(camera);
+camera.add(flashlight.target);
+flashlight.target.position.set(0,0,-1);
 
-/* CONTROLS */
-let controls = new THREE.PointerLockControls(camera, document.body);
-document.body.addEventListener("click", () => {
-    controls.lock();
+/* FLOOR */
+const floor=new THREE.Mesh(
+    new THREE.PlaneGeometry(60,60),
+    new THREE.MeshPhongMaterial({color:0x111111})
+);
+floor.rotation.x=-Math.PI/2;
+scene.add(floor);
+colliders.push(floor);
+
+/* ROOM LIGHTS */
+function roomLight(x,z){
+    const l=new THREE.PointLight(0xffaa88,0.6,15);
+    l.position.set(x,4,z);
+    scene.add(l); return l;
+}
+const lights=[
+    roomLight(-20,20),roomLight(0,10),roomLight(0,-15),
+    roomLight(-25,-25),roomLight(25,5),roomLight(10,-5)
+];
+
+/* COLLIDERS */
+function addCollider(m){
+    m.castShadow=true; m.receiveShadow=true;
+    scene.add(m); colliders.push(m);
+}
+function wall(x,z,w,h,d){
+    const m=new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshPhongMaterial({color:0x333333})
+    );
+    m.position.set(x,h/2,z); addCollider(m);
+}
+function furniture(x,z,w,h,d,c=0x555555){
+    const f=new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshPhongMaterial({color:c})
+    );
+    f.position.set(x,h/2,z); addCollider(f);
+}
+
+/* HOUSE */
+wall(0,-30,60,6,1); wall(0,30,60,6,1);
+wall(-30,0,1,6,60); wall(30,0,1,6,60);
+wall(-10,10,1,6,20); wall(10,10,1,6,20); wall(0,20,20,6,1);
+wall(-15,-10,1,6,20); wall(5,-10,1,6,20); wall(-5,-20,20,6,1);
+wall(-20,0,1,6,10); wall(-25,-5,10,6,1);
+wall(20,0,1,6,10); wall(25,-5,10,6,1);
+wall(0,-5,1,6,10); wall(5,-5,10,6,1);
+
+furniture(-20,20,8,2,3,0x8B4513);
+furniture(-15,25,4,1.5,2,0x696969);
+furniture(-25,15,3,4,1,0x808080);
+furniture(0,-15,6,1,3,0xA0522D);
+furniture(-3,-13,2,2,2,0x8B4513);
+furniture(3,-13,2,2,2,0x8B4513);
+furniture(-25,-25,6,3,2,0x708090);
+furniture(-20,-28,2,4,2,0x90EE90);
+furniture(-28,-20,2,2,6,0x708090);
+furniture(-25,5,5,2,8,0x5F9EA0);
+furniture(-28,0,2,2,2,0xCD853F);
+furniture(25,5,5,2,8,0x5F9EA0);
+furniture(28,0,2,2,2,0xCD853F);
+furniture(10,-5,2,2,4,0xDCDCDC);
+furniture(8,0,1.5,1.5,1.5,0xF0F8FF);
+
+/* DOOR */
+const door=new THREE.Mesh(
+    new THREE.BoxGeometry(4,6,1),
+    new THREE.MeshPhongMaterial({color:0xff0000})
+);
+door.position.set(0,3,29);
+addCollider(door);
+let doorUnlocked=false;
+
+/* ================= MONSTER ================= */
+const monster=new THREE.Group();
+const monsterMat=new THREE.MeshPhongMaterial({color:0x1a1a1a,shininess:5});
+const torso=new THREE.Mesh(new THREE.CylinderGeometry(0.6,0.8,3,8),monsterMat);
+torso.position.y=3.5; monster.add(torso);
+const dress=new THREE.Mesh(new THREE.ConeGeometry(1.2,4,8),monsterMat);
+dress.position.y=1.5; monster.add(dress);
+const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.2,2.2,6),monsterMat);
+neck.position.y=5.4; monster.add(neck);
+const head=new THREE.Mesh(new THREE.SphereGeometry(0.4,8,8),monsterMat);
+head.position.y=6.7; monster.add(head);
+function arm(x){
+    const a=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.2,3.5,6),monsterMat);
+    a.position.set(x,3.2,0); a.rotation.z=x>0?-0.2:0.2; monster.add(a);
+}
+arm(0.9); arm(-0.9);
+const eyeMat=new THREE.MeshBasicMaterial({color:0xff0000});
+const eyeGeo=new THREE.SphereGeometry(0.05,6,6);
+const eL=new THREE.Mesh(eyeGeo,eyeMat);
+const eR=new THREE.Mesh(eyeGeo,eyeMat);
+eL.position.set(-0.12,0.05,0.38); eR.position.set(0.12,0.05,0.38);
+head.add(eL); head.add(eR);
+monster.position.set(-20,0,-20);
+monster.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+scene.add(monster);
+
+/* ================= PLAYER MOVEMENT ================= */
+const move={forward:false,backward:false,left:false,right:false};
+document.addEventListener('keydown',e=>{
+    if(e.code==='KeyW') move.forward=true;
+    if(e.code==='KeyS') move.backward=true;
+    if(e.code==='KeyA') move.left=true;
+    if(e.code==='KeyD') move.right=true;
+});
+document.addEventListener('keyup',e=>{
+    if(e.code==='KeyW') move.forward=false;
+    if(e.code==='KeyS') move.backward=false;
+    if(e.code==='KeyA') move.left=false;
+    if(e.code==='KeyD') move.right=false;
 });
 
-// ... [Keep your floor, walls, and monster code] ...
+function updatePlayer(delta){
+    const speed=5*delta;
+    let dir=new THREE.Vector3();
+    if(move.forward) dir.z-=1;
+    if(move.backward) dir.z+=1;
+    if(move.left) dir.x-=1;
+    if(move.right) dir.x+=1;
+    dir.normalize();
 
-/* UPDATED ANIMATE LOOP */
-function animate() {
+    // move and check collisions
+    const nextPos=controls.getObject().position.clone();
+    nextPos.x+=dir.x*speed;
+    nextPos.z+=dir.z*speed;
+    let collision=false;
+    colliders.forEach(c=>{
+        const d=nextPos.distanceTo(c.position);
+        if(d<1.2){ collision=true; }
+    });
+    if(!collision){
+        controls.moveRight(dir.x*speed);
+        controls.moveForward(dir.z*speed);
+    }
+}
+
+/* ================= KEYS ================= */
+function spawnKey(x,z){
+    const key=new THREE.Mesh(
+        new THREE.BoxGeometry(0.3,0.1,0.6),
+        new THREE.MeshPhongMaterial({color:0xffff00})
+    );
+    key.position.set(x,0.5,z);
+    scene.add(key);
+    keyObjects.push(key);
+}
+// spawn 3 keys in arbitrary positions
+spawnKey(-10,10); spawnKey(15,-5); spawnKey(20,20);
+
+function checkKeys(){
+    keyObjects.forEach((key,i)=>{
+        if(camera.position.distanceTo(key.position)<1){
+            scene.remove(key); keyObjects.splice(i,1);
+            keysCollected++; keySound.play();
+        }
+    });
+}
+
+/* ================= DOOR CHECK ================= */
+function checkDoor(){
+    if(keysCollected>=totalKeys && camera.position.distanceTo(door.position)<2){
+        doorSound.play();
+        document.getElementById("winScreen").style.display="flex";
+        gameState="won";
+    }
+}
+
+/* ================= MONSTER AI ================= */
+function updateMonster(delta){
+    const playerPos=controls.getObject().position;
+    const dir=playerPos.clone().sub(monster.position).normalize();
+    if(chasing){
+        monster.position.add(dir.multiplyScalar(monsterSpeed));
+        if(monster.position.distanceTo(playerPos)<1.5){
+            document.getElementById("deathScreen").style.display="flex";
+            gameState="dead";
+        }
+    } else {
+        wanderTimer+=delta;
+        if(wanderTimer>3){
+            wanderDir.set(Math.random()-0.5,0,Math.random()-0.5).normalize();
+            wanderTimer=0;
+        }
+        monster.position.add(wanderDir.clone().multiplyScalar(monsterSpeed/2));
+        if(monster.position.distanceTo(playerPos)<8) chasing=true;
+    }
+}
+
+/* ================= FLASH / HEARTBEAT ================= */
+function updateFlash(){
+    const distance=monster.position.distanceTo(camera.position);
+    if(distance<5){
+        flash.style.opacity=Math.min(1,(5-distance)/5);
+        heartbeat.volume=1-distance/5;
+    } else {
+        flash.style.opacity=0;
+        heartbeat.volume=0;
+    }
+}
+
+/* ================= ANIMATE ================= */
+let lastTime=performance.now();
+function animate(){
     requestAnimationFrame(animate);
-    
-    // Forces the camera to stay at a "walking" height
-    camera.position.y = 2; 
+    const now=performance.now();
+    const delta=(now-lastTime)/1000;
+    lastTime=now;
 
-    // ... [Keep your movement logic] ...
-    
-    renderer.render(scene, camera);
+    if(gameState==="playing"){
+        updatePlayer(delta);
+        checkKeys();
+        checkDoor();
+        updateMonster(delta);
+        updateFlash();
+    }
+
+    // flicker
+    if(Math.random()<0.01){
+        const l=lights[Math.floor(Math.random()*lights.length)];
+        l.intensity=0.1; setTimeout(()=>l.intensity=0.6,120);
+    }
+
+    // idle sway
+    monster.rotation.z=Math.sin(now*0.001)*0.03;
+
+    renderer.render(scene,camera);
 }
 animate();
+
+/* ================= START / RESTART ================= */
+window.startGame=()=>{
+    document.getElementById("menu").style.display="none";
+    bgMusic.currentTime=0; bgMusic.play().catch(()=>{});
+    controls.lock(); gameState="playing";
+};
+window.restartGame=()=>location.reload();
 </script>
+</body>
+</html>
+
